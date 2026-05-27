@@ -1,6 +1,6 @@
 # Staff Availability Scheduler
 
-A fullstack admin app for managing staff availability and generating bookable appointment start times. Built as a take-home project for a **Fullstack Engineer** role.
+A fullstack admin app for managing staff availability and generating bookable appointment start times.
 
 Care teams can define **recurring weekly hours**, apply **date-specific overrides** (PTO, shortened days, extra hours), and preview **open slots** for a date range and appointment length.
 
