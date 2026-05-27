@@ -12,6 +12,13 @@ export const WeeklyWindowCreateSchema = z.object({
   endTime: z.string(),
 })
 
+export const WeeklyWindowBulkCreateSchema = z.object({
+  staffId: z.number().int().positive(),
+  daysOfWeek: z.array(z.number().int().min(0).max(6)).min(1, 'Select at least one day.'),
+  startTime: z.string(),
+  endTime: z.string(),
+})
+
 export const OverrideUpsertSchema = z.object({
   staffId: z.number().int().positive(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

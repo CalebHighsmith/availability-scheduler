@@ -81,6 +81,20 @@ describe('API integration', () => {
     expect(res.body.error).toMatch(/start date/i)
   })
 
+  it('bulk creates weekly windows for multiple days', async () => {
+    const staffRes = await request(app).post('/api/staff').send({ name: 'Bulk User' }).expect(201)
+    const staffId = staffRes.body.staff.id as number
+
+    const res = await request(app)
+      .post('/api/weekly-windows/bulk')
+      .send({ staffId, daysOfWeek: [1, 3, 5], startTime: '08:00', endTime: '10:00' })
+      .expect(201)
+
+    expect(res.body.created).toHaveLength(3)
+    const list = await request(app).get('/api/weekly-windows').query({ staffId }).expect(200)
+    expect(list.body.windows).toHaveLength(3)
+  })
+
   it('rejects add override windows that overlap weekly availability', async () => {
     const staffRes = await request(app).post('/api/staff').send({ name: 'Jane' }).expect(201)
     const staffId = staffRes.body.staff.id as number

@@ -1,99 +1,237 @@
-# Availability Scheduler (Interview Project)
+# Staff Availability Scheduler
 
-Fullstack app to manage staff availability (recurring weekly + date overrides) and generate available appointment start times for a date range.
+A fullstack admin app for managing staff availability and generating bookable appointment start times. Built as a take-home project for a **Fullstack Engineer** role.
 
-## Stack
+Care teams can define **recurring weekly hours**, apply **date-specific overrides** (PTO, shortened days, extra hours), and preview **open slots** for a date range and appointment length.
 
-- Frontend: React + TypeScript + Tailwind (Vite)
-- Backend: Node + Express + TypeScript
-- Persistence: SQLite (`server/data.sqlite` via `better-sqlite3`)
-- Tests: Vitest (scheduling unit tests, API integration tests via supertest, frontend helpers)
+---
 
-## Setup / run locally
+## Features (mapped to requirements)
 
-Prereqs: Node 18+ recommended.
+| Requirement | Implementation |
+|-------------|----------------|
+| Create staff members | Staff dropdown + add form |
+| Recurring weekly availability (multiple windows/day) | Per-day windows + **bulk weekly editor** |
+| Date overrides (`unavailable` / `replace` / `add`) | Overrides panel with upsert by date |
+| View slots for staff + date range + duration | Slots panel (15 / 30 / 45 / 60 min) |
+| Invalid window handling | API validation + friendly UI errors |
+| Show availability **source** per day | Pills + calendar colors + list labels |
+| Persistence across refresh | SQLite (`server/data.sqlite`) |
 
-Install deps:
+**Also included (nice-to-haves):**
+
+- **Calendar UI** — month view with source colors and per-day slot detail
+- **Bulk weekly editor** — apply the same hours to multiple weekdays at once
+- **Seed demo data** — one-click sample data (Jane Smith + PDF example overrides)
+- **Tests** — scheduling unit tests, API integration tests, Playwright E2E
+
+---
+
+## Tech stack
+
+| Layer | Choice |
+|-------|--------|
+| Frontend | React 19, TypeScript, Tailwind CSS, Vite |
+| Backend | Node.js, Express 5, TypeScript |
+| Database | SQLite via `better-sqlite3` |
+| Validation | Zod (API), custom scheduling validators |
+| Tests | Vitest, Supertest, Playwright |
+
+---
+
+## Quick start
+
+**Prerequisites:** Node.js 18+
 
 ```bash
+# Install dependencies (root, server, web)
 cd web && npm install
 cd ../server && npm install
 cd .. && npm install
-```
 
-Run both API + web:
-
-```bash
+# Run API + frontend
 npm run dev
 ```
 
-- Web: `http://localhost:5173`
-- API: `http://localhost:5174`
+| Service | URL |
+|---------|-----|
+| Web UI | http://localhost:5173 |
+| API | http://localhost:5174 |
 
-Run tests:
+**Demo flow**
+
+1. Open the web UI → click **Seed demo data**
+2. Select **Jane Smith**
+3. Go to **Slots** → **Calendar** → **Generate slots**
+4. Click **Monday, May 25, 2026** to see `9:00 AM` / `9:30 AM` slots
+
+Or seed via API:
 
 ```bash
-npm test
+curl -X POST http://localhost:5174/api/seed
 ```
+
+---
+
+## Scripts
+
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start API + web (concurrently) |
+| `npm run build` | Production build (server + web) |
+| `npm test` | Unit + integration tests |
+| `npm run test:e2e` | Playwright end-to-end tests |
+
+**E2E setup (first time only):**
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+Playwright reuses an existing dev server on port `5173` when one is already running.
+
+---
+
+## Project structure
+
+```
+├── e2e/                    # Playwright tests
+├── server/
+│   ├── src/
+│   │   ├── scheduling.ts   # Core slot-generation logic (pure, tested)
+│   │   ├── app.ts          # Express routes
+│   │   ├── db.ts           # SQLite schema + migrations
+│   │   └── validation.ts   # Zod schemas
+│   └── test/               # Vitest (scheduling + API)
+├── web/
+│   └── src/
+│       ├── pages/AvailabilityPage.tsx
+│       ├── components/     # Calendar, bulk weekly editor
+│       └── api.ts          # API client
+└── playwright.config.ts
+```
+
+---
 
 ## Data model
 
-- **Staff**: `staff(id, name)`
-- **Weekly windows**: `weekly_windows(staff_id, day_of_week, start_min, end_min)`
-- **Overrides**: `overrides(staff_id, date, type)`
-  - `type` is one of:
-    - `unavailable`: unavailable all day
-    - `replace`: ignore weekly windows and use override windows
-    - `add`: take weekly windows and add extra windows for that date
-- **Override windows**: `override_windows(override_id, start_min, end_min)`
+```
+staff
+  └── weekly_windows (day_of_week, start_min, end_min)
+  └── overrides (date, type)
+        └── override_windows (start_min, end_min)
+```
 
-Times are stored as **minutes from midnight** to keep scheduling logic simple and testable.
+Times are stored as **minutes from midnight** (`540` = 9:00 AM).
 
-## Scheduling logic (how slots are generated)
+### Override semantics
 
-Inputs: staff member, start date, end date, appointment duration minutes.
+| Type | Behavior |
+|------|----------|
+| `unavailable` | No availability for that date (ignores weekly) |
+| `replace` | Only override windows apply for that date |
+| `add` | Weekly windows **plus** extra override windows (must not overlap weekly) |
 
-For each date in the range (inclusive):
+Overrides are **upserted** by `(staffId, date)` — saving again replaces that day's override.
 
-1. Start with weekly windows for that weekday.
-2. If a date override exists:
-   - `unavailable`: no windows; source is `override_unavailable`
-   - `replace`: windows become the override windows; source is `override`
-   - `add`: weekly + override windows are merged; source is `override`
-3. Slots are generated per window by stepping forward by `durationMin` while `start + durationMin <= end`.
+---
 
-The UI shows the **source** for each day: recurring, override, override-unavailable, or none.
+## Scheduling logic
 
-## Validation / business rules
+For each date in `[start, end]` (inclusive):
+
+1. Load recurring windows for that **weekday**.
+2. Apply any **date override** (see table above).
+3. Generate slot start times: step by `durationMin` while `start + durationMin ≤ window end`.
+
+Example: available `9:00 AM–10:00 AM`, duration **30 min** → slots at `9:00 AM`, `9:30 AM`.
+
+The API returns each day with:
+
+- `dateLabel` — e.g. `Monday, May 25`
+- `source` — `recurring` \| `override` \| `override_unavailable` \| `none`
+- `slots` — 12-hour times, e.g. `9:00 AM`
+
+Core logic lives in `server/src/scheduling.ts` and is covered by unit tests.
+
+---
+
+## API reference
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/health` | Health check |
+| `POST` | `/api/seed` | Idempotent demo data |
+| `GET/POST` | `/api/staff` | List / create staff |
+| `GET/POST` | `/api/weekly-windows` | List / create one window |
+| `POST` | `/api/weekly-windows/bulk` | Bulk create for multiple days |
+| `DELETE` | `/api/weekly-windows/:id` | Remove window |
+| `GET/POST` | `/api/overrides` | List / upsert override |
+| `DELETE` | `/api/overrides/:id` | Remove override |
+| `GET` | `/api/slots?staffId&start&end&durationMin` | Generate appointment slots |
+
+Errors: `{ "error": "human-readable message" }`
+
+---
+
+## Validation & business rules
 
 The API rejects:
 
 - End time before start time
-- Overlapping windows on the same day (weekly windows)
-- **`add` overrides that overlap recurring weekly windows** for that weekday
+- Overlapping windows on the same day
 - Empty override windows for `replace` / `add`
-- Invalid appointment duration (<= 0) for slot generation
-- Slot queries where **start date is after end date** or dates are not `YYYY-MM-DD`
+- `add` overrides that overlap recurring weekly windows
+- Invalid dates or `start > end` on slot queries
+- Appointment duration ≤ 0
 
-API errors are returned as `{ "error": "human-readable message" }`.
+---
 
 ## Assumptions
 
-- Times are treated as **local time** (no timezone conversions).
-- Slots are aligned to the window start and the chosen duration (e.g., 9:00–10:00 with 45 min gives only 9:00).
-- Overrides are **upserted by (staffId, date)** (saving again updates that date’s override).
+- All times are **local wall-clock** (no timezone or DST handling).
+- Slots align to window starts at the chosen interval (no arbitrary offsets).
+- One admin user (no authentication), per project scope.
 
-## Tradeoffs (time-boxed)
+---
 
-- No edit-in-place UI for weekly windows; you add/delete windows instead.
-- No bulk weekly availability editor.
-- Minimal styling beyond clean Tailwind layout.
+## Tradeoffs
+
+| Decision | Rationale |
+|----------|-----------|
+| SQLite file DB | Fast local setup, meets persistence requirement |
+| Scheduling logic on server | Single source of truth; frontend is a thin client |
+| No ORM | Keeps focus on scheduling rules and testability |
+| Add/delete windows vs inline edit | Simpler UI within time budget |
+| `reuseExistingServer` in Playwright | Smoother local dev when port 5173 is already in use |
+
+---
 
 ## AI usage
 
-- Tools used: Cursor agent + an LLM for scaffolding and validation/test patterns.
-- Used for: outlining the data model, drafting the scheduling function signatures, and generating initial test cases.
-- Suggestion changed/rejected: I avoided adding a heavy ORM/migration tool (e.g. Prisma) to keep setup fast and the scheduling logic front-and-center.
-- Issue identified manually: Tailwind v4 CLI mismatch on this environment; pinned Tailwind to v3 for stable `tailwindcss init`.
-- Least confident area: timezone handling and DST behavior (intentionally treated as local wall-clock time).
+| Question | Answer |
+|----------|--------|
+| **Tools used** | Cursor IDE, Claude / Composer agents |
+| **Used for** | Scaffolding (Vite, Express, schema), scheduling function design, test cases, UI layout iterations |
+| **Changed / rejected** | Skipped Prisma/migrations; pinned Tailwind v3 when v4 CLI failed; rejected seeding that silently no-ops when any staff exists (made idempotent instead) |
+| **Identified manually** | Overlap rules for `add` overrides vs weekly windows; date-range validation; mobile layout via tabs |
+| **Least confident in** | Timezone/DST behavior (documented as out of scope) |
 
+---
+
+## Evaluation checklist (self-assessment)
+
+- [x] End-to-end availability workflow
+- [x] Correct slot generation (recurring + overrides + duration)
+- [x] Clear data model and README
+- [x] Business-rule validation
+- [x] Usable frontend (responsive, calendar, source labels)
+- [x] Organized, testable code
+- [x] Automated tests (unit, API, E2E)
+
+---
+
+## License
+
+MIT (interview submission — use as reference only unless otherwise specified).

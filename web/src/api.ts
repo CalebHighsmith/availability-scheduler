@@ -51,6 +51,16 @@ export const Api = {
   listWeeklyWindows: (staffId: number) => api<{ windows: WeeklyWindow[] }>(`/weekly-windows?staffId=${staffId}`),
   createWeeklyWindow: (input: { staffId: number; dayOfWeek: number; startTime: string; endTime: string }) =>
     api<{ window: WeeklyWindow }>('/weekly-windows', { method: 'POST', body: JSON.stringify(input) }),
+  createWeeklyWindowsBulk: (input: {
+    staffId: number
+    daysOfWeek: number[]
+    startTime: string
+    endTime: string
+  }) =>
+    api<{ created: Array<{ dayOfWeek: number; id: number }>; skipped: number[] }>('/weekly-windows/bulk', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   deleteWeeklyWindow: (id: number) => api<void>(`/weekly-windows/${id}`, { method: 'DELETE' }),
 
   listOverrides: (staffId: number) => api<{ overrides: Override[] }>(`/overrides?staffId=${staffId}`),
@@ -66,5 +76,7 @@ export const Api = {
     api<{ days: SlotsDay[] }>(
       `/slots?staffId=${q.staffId}&start=${encodeURIComponent(q.start)}&end=${encodeURIComponent(q.end)}&durationMin=${q.durationMin}`,
     ),
+
+  seed: () => api<{ ok: true; seeded: true; staffCount: number; created?: string[] }>('/seed', { method: 'POST' }),
 }
 

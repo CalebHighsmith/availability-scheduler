@@ -15,13 +15,99 @@ import {
   validateWindows,
   type Window,
 } from './scheduling'
-import { OverrideUpsertSchema, StaffCreateSchema, WeeklyWindowCreateSchema, parseWindowTimes } from './validation'
+import {
+  OverrideUpsertSchema,
+  StaffCreateSchema,
+  WeeklyWindowBulkCreateSchema,
+  WeeklyWindowCreateSchema,
+  parseWindowTimes,
+} from './validation'
 
 export const app = express()
 app.use(cors())
 app.use(express.json())
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
+
+app.post('/api/seed', (_req, res) => {
+  const db = getDb()
+  const getStaffIdByNameStmt = db.prepare('select id from staff where name=?').pluck()
+  const insertStaff = db.prepare('insert into staff (name) values (?)')
+
+  const insertWeekly = db.prepare('insert into weekly_windows (staff_id, day_of_week, start_min, end_min) values (?,?,?,?)')
+  const weeklyExists = db.prepare(
+    'select 1 from weekly_windows where staff_id=? and day_of_week=? and start_min=? and end_min=?',
+  )
+
+  const insertOverride = db.prepare('insert into overrides (staff_id, date, type) values (?,?,?)')
+  const updateOverride = db.prepare('update overrides set type=? where id=?')
+  const getOverrideIdStmt = db.prepare('select id from overrides where staff_id=? and date=?').pluck()
+  const clearOverrideWindows = db.prepare('delete from override_windows where override_id=?')
+  const insertOverrideWindow = db.prepare('insert into override_windows (override_id, start_min, end_min) values (?,?,?)')
+
+  const tx = db.transaction(() => {
+    const created: string[] = []
+
+    let janeId = getStaffIdByNameStmt.get('Jane Smith') as number | undefined
+    if (!janeId) {
+      const info = insertStaff.run('Jane Smith')
+      janeId = Number(info.lastInsertRowid)
+      created.push('Jane Smith')
+    }
+
+    let bobId = getStaffIdByNameStmt.get('Bob Jones') as number | undefined
+    if (!bobId) {
+      const info = insertStaff.run('Bob Jones')
+      bobId = Number(info.lastInsertRowid)
+      created.push('Bob Jones')
+    }
+
+    // Jane: Mon/Wed 9-12 and 1-5, Fri 9-11
+    const janeWeekly: Array<[number, number, number]> = [
+      [1, 9 * 60, 12 * 60],
+      [1, 13 * 60, 17 * 60],
+      [3, 9 * 60, 12 * 60],
+      [3, 13 * 60, 17 * 60],
+      [5, 9 * 60, 11 * 60],
+    ]
+    for (const [dow, startMin, endMin] of janeWeekly) {
+      const exists = weeklyExists.get(janeId, dow, startMin, endMin)
+      if (!exists) insertWeekly.run(janeId, dow, startMin, endMin)
+    }
+
+    // Bob: Thu 10-2 only
+    const bobWeekly: Array<[number, number, number]> = [[4, 10 * 60, 14 * 60]]
+    for (const [dow, startMin, endMin] of bobWeekly) {
+      const exists = weeklyExists.get(bobId, dow, startMin, endMin)
+      if (!exists) insertWeekly.run(bobId, dow, startMin, endMin)
+    }
+
+    // Jane overrides (PDF examples). Upsert by (staffId, date).
+    const upsertOverrideForJane = (date: string, type: string, windows: Window[]) => {
+      const existingId = getOverrideIdStmt.get(janeId, date) as number | undefined
+      let overrideId: number
+      if (existingId) {
+        overrideId = existingId
+        updateOverride.run(type, overrideId)
+        clearOverrideWindows.run(overrideId)
+      } else {
+        const info = insertOverride.run(janeId, date, type)
+        overrideId = Number(info.lastInsertRowid)
+      }
+      for (const w of windows) insertOverrideWindow.run(overrideId, w.startMin, w.endMin)
+    }
+
+    upsertOverrideForJane('2026-05-27', 'unavailable', [])
+    upsertOverrideForJane('2026-05-28', 'replace', [{ startMin: 10 * 60, endMin: 14 * 60 }])
+    upsertOverrideForJane('2026-05-29', 'add', [{ startMin: 17 * 60, endMin: 19 * 60 }])
+
+    return created
+  })
+
+  const created = tx()
+  const countRow = db.prepare('select count(*) as c from staff').get() as { c: number }
+  return res.json({ ok: true, seeded: true, created, staffCount: Number(countRow.c) })
+})
 
 app.get('/api/staff', (_req, res) => {
   const db = getDb()
@@ -82,6 +168,54 @@ app.post('/api/weekly-windows', (req, res) => {
       endMin: w.endMin,
     },
   })
+})
+
+app.post('/api/weekly-windows/bulk', (req, res) => {
+  const parsed = WeeklyWindowBulkCreateSchema.safeParse(req.body)
+  if (!parsed.success) return sendError(res, 400, zodErrorMessage(parsed.error))
+
+  const w = parseWindowTimes({ startTime: parsed.data.startTime, endTime: parsed.data.endTime })
+  if (!w) return sendError(res, 400, 'Invalid time format. Use HH:MM.')
+
+  const validation = validateWindows([w])
+  if (!validation.ok) return sendError(res, 400, validation.error)
+
+  const db = getDb()
+  const insertWeekly = db.prepare('insert into weekly_windows (staff_id, day_of_week, start_min, end_min) values (?,?,?,?)')
+  const existingStmt = db.prepare(
+    'select start_min as startMin, end_min as endMin from weekly_windows where staff_id=? and day_of_week=?',
+  )
+  const weeklyExists = db.prepare(
+    'select 1 from weekly_windows where staff_id=? and day_of_week=? and start_min=? and end_min=?',
+  )
+
+  const created: Array<{ dayOfWeek: number; id: number }> = []
+  const skipped: number[] = []
+
+  const tx = db.transaction(() => {
+    for (const dayOfWeek of parsed.data.daysOfWeek) {
+      const exists = weeklyExists.get(parsed.data.staffId, dayOfWeek, w.startMin, w.endMin)
+      if (exists) {
+        skipped.push(dayOfWeek)
+        continue
+      }
+      const existing = existingStmt.all(parsed.data.staffId, dayOfWeek) as Window[]
+      const combined = validateWindows([...existing, w])
+      if (!combined.ok) {
+        throw new Error(`Day ${dayOfWeek}: ${combined.error}`)
+      }
+      const info = insertWeekly.run(parsed.data.staffId, dayOfWeek, w.startMin, w.endMin)
+      created.push({ dayOfWeek, id: Number(info.lastInsertRowid) })
+    }
+  })
+
+  try {
+    tx()
+  } catch (e) {
+    return sendError(res, 400, e instanceof Error ? e.message : 'Bulk create failed.')
+  }
+
+  res.status(201).json({ created, skipped })
 })
 
 app.delete('/api/weekly-windows/:id', (req, res) => {

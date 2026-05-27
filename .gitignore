@@ -12,3 +12,7 @@ server/data.sqlite-shm
 
 *.log
 
+test-results/
+playwright-report/
+playwright/.cache/
+

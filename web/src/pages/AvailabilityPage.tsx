@@ -1,9 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Api, type OverrideType, type SlotsDay, type Staff, type WeeklyWindow } from '../api'
+import { AvailabilityCalendar } from '../components/AvailabilityCalendar'
+import { BulkWeeklyEditor } from '../components/BulkWeeklyEditor'
 import { parseApiError } from '../lib/apiError'
+import { monthStartEnd } from '../lib/calendar'
 import { formatDateLong, formatTimeRange12h } from '../lib/format'
 
 const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const
+
+type MobileTab = 'schedule' | 'slots'
 
 function clsx(...xs: Array<string | false | undefined>) {
   return xs.filter(Boolean).join(' ')
@@ -19,6 +24,8 @@ export function AvailabilityPage() {
 
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const [mobileTab, setMobileTab] = useState<MobileTab>('schedule')
+  const [seeding, setSeeding] = useState(false)
 
   const selectedStaff = useMemo(() => staff.find((s) => s.id === selectedStaffId) ?? null, [staff, selectedStaffId])
 
@@ -33,6 +40,24 @@ export function AvailabilityPage() {
     const [w, o] = await Promise.all([Api.listWeeklyWindows(staffId), Api.listOverrides(staffId)])
     setWeeklyWindows(w.windows)
     setOverrides(o.overrides)
+  }
+
+  async function handleSeed() {
+    setError(null)
+    setSeeding(true)
+    try {
+      await Api.seed()
+      const next = await Api.listStaff()
+      setStaff(next.staff)
+      const jane = next.staff.find((s) => s.name === 'Jane Smith')
+      const pickId = jane?.id ?? next.staff[0]?.id ?? null
+      setSelectedStaffId(pickId)
+      if (pickId) await refreshStaffData(pickId)
+    } catch (e) {
+      setError(parseApiError(e))
+    } finally {
+      setSeeding(false)
+    }
   }
 
   useEffect(() => {
@@ -50,58 +75,188 @@ export function AvailabilityPage() {
   }, [selectedStaffId])
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {error ? (
         <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-900">{error}</div>
       ) : null}
 
-      <div className="grid gap-6 md:grid-cols-3">
-        <Card title="Staff">
-          <StaffPanel
-            staff={staff}
-            selectedStaffId={selectedStaffId}
-            onSelect={setSelectedStaffId}
-            onCreated={async () => {
-              await refreshStaff()
+      <StaffToolbar
+        staff={staff}
+        selectedStaffId={selectedStaffId}
+        onSelect={setSelectedStaffId}
+        onCreated={refreshStaff}
+        onSeed={handleSeed}
+        seeding={seeding}
+      />
+
+      <MobileTabBar active={mobileTab} onChange={setMobileTab} />
+
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-start lg:gap-6">
+        {/* Schedule column */}
+        <div className={clsx('space-y-4', mobileTab === 'slots' && 'hidden lg:block')}>
+          <Card title="Weekly availability">
+            {selectedStaff ? (
+              <WeeklyPanel
+                staffId={selectedStaff.id}
+                windows={weeklyWindows}
+                disabled={loading}
+                onChanged={async () => refreshStaffData(selectedStaff.id)}
+              />
+            ) : (
+              <EmptyState text="Add or select a staff member to configure weekly availability." />
+            )}
+          </Card>
+
+          <Card title="Date overrides">
+            {selectedStaff ? (
+              <OverridesPanel
+                staffId={selectedStaff.id}
+                overrides={overrides}
+                disabled={loading}
+                onChanged={async () => refreshStaffData(selectedStaff.id)}
+              />
+            ) : (
+              <EmptyState text="Add or select a staff member to configure overrides." />
+            )}
+          </Card>
+        </div>
+
+        {/* Slots column */}
+        <div className={clsx(mobileTab === 'schedule' && 'hidden lg:block')}>
+          <div className="lg:sticky lg:top-4">
+            <Card title="Available appointment slots">
+              {selectedStaff ? (
+                <SlotsPanel staffId={selectedStaff.id} staffName={selectedStaff.name} />
+              ) : (
+                <EmptyState text="Add or select a staff member to view open slots." />
+              )}
+            </Card>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MobileTabBar(props: { active: MobileTab; onChange: (tab: MobileTab) => void }) {
+  const tabs: Array<{ id: MobileTab; label: string }> = [
+    { id: 'schedule', label: 'Schedule' },
+    { id: 'slots', label: 'Slots' },
+  ]
+  return (
+    <div className="flex rounded-lg border bg-white p-1 lg:hidden" role="tablist">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          role="tab"
+          aria-selected={props.active === t.id}
+          className={clsx(
+            'flex-1 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+            props.active === t.id ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-50',
+          )}
+          onClick={() => props.onChange(t.id)}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function StaffToolbar(props: {
+  staff: Staff[]
+  selectedStaffId: number | null
+  onSelect: (id: number | null) => void
+  onCreated: () => Promise<void>
+  onSeed: () => Promise<void>
+  seeding: boolean
+}) {
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+
+  async function addStaff() {
+    if (!name.trim()) return
+    setErr(null)
+    setBusy(true)
+    try {
+      const r = await Api.createStaff(name.trim())
+      setName('')
+      await props.onCreated()
+      props.onSelect(r.staff.id)
+    } catch (e) {
+      setErr(parseApiError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="rounded-lg border bg-white p-3 shadow-sm sm:p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <label className="min-w-0 flex-1 text-xs font-medium text-slate-600">
+          Staff member
+          <select
+            data-testid="staff-select"
+            className="mt-1 w-full rounded-md border bg-white px-3 py-2 text-sm"
+            value={props.selectedStaffId ?? ''}
+            onChange={(e) => {
+              const v = e.target.value
+              props.onSelect(v ? Number(v) : null)
             }}
-          />
-        </Card>
+          >
+            <option value="">{props.staff.length ? 'Select staff…' : 'No staff yet'}</option>
+            {props.staff.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name}
+              </option>
+            ))}
+          </select>
+        </label>
 
-        <Card title="Weekly availability">
-          {selectedStaff ? (
-            <WeeklyPanel
-              staffId={selectedStaff.id}
-              windows={weeklyWindows}
-              disabled={loading}
-              onChanged={async () => refreshStaffData(selectedStaff.id)}
-            />
-          ) : (
-            <EmptyState text="Create a staff member to configure weekly availability." />
+        <button
+          type="button"
+          data-testid="seed-demo-data"
+          className={clsx(
+            'shrink-0 rounded-md border px-3 py-2 text-sm font-medium',
+            props.seeding ? 'bg-slate-100 text-slate-400' : 'bg-white hover:bg-slate-50',
           )}
-        </Card>
-
-        <Card title="Date overrides">
-          {selectedStaff ? (
-            <OverridesPanel
-              staffId={selectedStaff.id}
-              overrides={overrides}
-              disabled={loading}
-              onChanged={async () => refreshStaffData(selectedStaff.id)}
-            />
-          ) : (
-            <EmptyState text="Create a staff member to add overrides." />
-          )}
-        </Card>
+          disabled={props.seeding}
+          onClick={() => void props.onSeed()}
+        >
+          {props.seeding ? 'Seeding…' : 'Seed demo data'}
+        </button>
       </div>
 
-      <Card title="Available appointment slots">
-        {selectedStaff ? (
-          <SlotsPanel staffId={selectedStaff.id} />
-        ) : (
-          <EmptyState text="Create and select a staff member to view open slots." />
-        )}
-      </Card>
-    </div>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <input
+          className="min-w-0 flex-1 rounded-md border px-3 py-2 text-sm"
+          placeholder="Add new staff member"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && name.trim()) {
+              e.preventDefault()
+              void addStaff()
+            }
+          }}
+        />
+        <button
+          type="button"
+          className={clsx(
+            'rounded-md px-4 py-2 text-sm font-medium sm:shrink-0',
+            busy ? 'bg-slate-200 text-slate-500' : 'bg-slate-900 text-white hover:bg-slate-800',
+          )}
+          disabled={busy || !name.trim()}
+          onClick={() => void addStaff()}
+        >
+          Add staff
+        </button>
+      </div>
+
+      {err ? <div className="mt-2 text-xs text-red-700">{err}</div> : null}
+    </section>
   )
 }
 
@@ -111,81 +266,13 @@ function Card(props: { title: string; children: React.ReactNode }) {
       <div className="border-b px-4 py-3">
         <h2 className="text-sm font-semibold">{props.title}</h2>
       </div>
-      <div className="p-4">{props.children}</div>
+      <div className="p-3 sm:p-4">{props.children}</div>
     </section>
   )
 }
 
 function EmptyState(props: { text: string }) {
   return <div className="text-sm text-slate-600">{props.text}</div>
-}
-
-function StaffPanel(props: {
-  staff: Staff[]
-  selectedStaffId: number | null
-  onSelect: (id: number) => void
-  onCreated: () => Promise<void>
-}) {
-  const [name, setName] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-2">
-        <input
-          className="w-full rounded-md border px-3 py-2 text-sm"
-          placeholder="New staff name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-        />
-        <button
-          className={clsx(
-            'rounded-md px-3 py-2 text-sm font-medium',
-            busy ? 'bg-slate-200 text-slate-500' : 'bg-slate-900 text-white hover:bg-slate-800',
-          )}
-          disabled={busy}
-          onClick={async () => {
-            setErr(null)
-            setBusy(true)
-            try {
-              await Api.createStaff(name)
-              setName('')
-              await props.onCreated()
-            } catch (e) {
-              setErr(parseApiError(e))
-            } finally {
-              setBusy(false)
-            }
-          }}
-        >
-          Add
-        </button>
-      </div>
-
-      {err ? <div className="text-xs text-red-700">{err}</div> : null}
-
-      <div className="space-y-1">
-        {props.staff.length ? (
-          props.staff.map((s) => (
-            <button
-              key={s.id}
-              className={clsx(
-                'flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm',
-                props.selectedStaffId === s.id ? 'border-slate-900 bg-slate-50' : 'hover:bg-slate-50',
-              )}
-              onClick={() => props.onSelect(s.id)}
-            >
-              <span className="font-medium">{s.name}</span>
-              <span className="text-xs text-slate-500">#{s.id}</span>
-            </button>
-          ))
-        ) : (
-          <div className="text-sm text-slate-600">No staff yet.</div>
-        )}
-      </div>
-    </div>
-  )
 }
 
 function WeeklyPanel(props: { staffId: number; windows: WeeklyWindow[]; disabled: boolean; onChanged: () => Promise<void> }) {
@@ -207,6 +294,8 @@ function WeeklyPanel(props: { staffId: number; windows: WeeklyWindow[]; disabled
 
   return (
     <div className="space-y-4">
+      <BulkWeeklyEditor staffId={props.staffId} disabled={props.disabled} onChanged={props.onChanged} />
+
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
         <label className="text-xs text-slate-600">
           Day
@@ -243,6 +332,7 @@ function WeeklyPanel(props: { staffId: number; windows: WeeklyWindow[]; disabled
       </div>
 
       <button
+        type="button"
         className={clsx(
           'w-full rounded-md px-3 py-2 text-sm font-medium',
           busy || props.disabled ? 'bg-slate-200 text-slate-500' : 'bg-slate-900 text-white hover:bg-slate-800',
@@ -255,7 +345,7 @@ function WeeklyPanel(props: { staffId: number; windows: WeeklyWindow[]; disabled
             await Api.createWeeklyWindow({ staffId: props.staffId, dayOfWeek, startTime, endTime })
             await props.onChanged()
           } catch (e) {
-                setErr(parseApiError(e))
+            setErr(parseApiError(e))
           } finally {
             setBusy(false)
           }
@@ -266,11 +356,11 @@ function WeeklyPanel(props: { staffId: number; windows: WeeklyWindow[]; disabled
 
       {err ? <div className="text-xs text-red-700">{err}</div> : null}
 
-      <div className="space-y-3">
+      <div className="max-h-[min(50vh,28rem)] space-y-2 overflow-y-auto pr-1">
         {DOW.map((label, i) => {
           const arr = grouped.get(i) ?? []
           return (
-            <div key={label} className="rounded-md border">
+            <div key={label} className="rounded-md border" data-testid={`weekly-day-${i}`}>
               <div className="flex items-center justify-between border-b bg-slate-50 px-3 py-2">
                 <div className="text-sm font-medium">{label}</div>
                 <div className="text-xs text-slate-600">{arr.length ? `${arr.length} window(s)` : 'None'}</div>
@@ -278,14 +368,11 @@ function WeeklyPanel(props: { staffId: number; windows: WeeklyWindow[]; disabled
               <div className="divide-y">
                 {arr.length ? (
                   arr.map((w) => (
-                    <div key={w.id} className="flex items-center justify-between px-3 py-2 text-sm">
-                      <div>
-                        <span className="font-mono">
-                          {formatTimeRange12h(w.startMin, w.endMin)}
-                        </span>
-                      </div>
+                    <div key={w.id} className="flex items-center justify-between gap-2 px-3 py-2 text-sm">
+                      <span className="font-mono">{formatTimeRange12h(w.startMin, w.endMin)}</span>
                       <button
-                        className="text-xs font-medium text-red-700 hover:underline"
+                        type="button"
+                        className="shrink-0 text-xs font-medium text-red-700 hover:underline"
                         onClick={async () => {
                           await Api.deleteWeeklyWindow(w.id)
                           await props.onChanged()
@@ -372,6 +459,7 @@ function OverridesPanel(props: {
                   }}
                 />
                 <button
+                  type="button"
                   className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
                   onClick={() => setWindows((prev) => prev.filter((_, i) => i !== idx))}
                 >
@@ -381,6 +469,7 @@ function OverridesPanel(props: {
             ))}
           </div>
           <button
+            type="button"
             className="rounded-md border px-3 py-2 text-sm hover:bg-slate-50"
             onClick={() => setWindows((prev) => [...prev, { startTime: '17:00', endTime: '19:00' }])}
           >
@@ -390,6 +479,7 @@ function OverridesPanel(props: {
       )}
 
       <button
+        type="button"
         className={clsx(
           'w-full rounded-md px-3 py-2 text-sm font-medium',
           busy || props.disabled ? 'bg-slate-200 text-slate-500' : 'bg-slate-900 text-white hover:bg-slate-800',
@@ -407,7 +497,7 @@ function OverridesPanel(props: {
             })
             await props.onChanged()
           } catch (e) {
-                setErr(parseApiError(e))
+            setErr(parseApiError(e))
           } finally {
             setBusy(false)
           }
@@ -421,16 +511,17 @@ function OverridesPanel(props: {
       <div className="space-y-2">
         <div className="text-xs font-medium text-slate-700">Existing overrides</div>
         {props.overrides.length ? (
-          <div className="space-y-2">
+          <div className="max-h-48 space-y-2 overflow-y-auto pr-1">
             {props.overrides.map((o) => (
               <div key={o.id} className="rounded-md border px-3 py-2 text-sm">
-                <div className="flex items-center justify-between">
-                  <div className="font-medium">
-                    {formatDateLong(o.date)}{' '}
-                    <span className="ml-2 rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">{o.type}</span>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 font-medium">
+                    <div>{formatDateLong(o.date)}</div>
+                    <span className="mt-1 inline-block rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700">{o.type}</span>
                   </div>
                   <button
-                    className="text-xs font-medium text-red-700 hover:underline"
+                    type="button"
+                    className="shrink-0 text-xs font-medium text-red-700 hover:underline"
                     onClick={async () => {
                       await Api.deleteOverride(o.id)
                       await props.onChanged()
@@ -457,18 +548,76 @@ function OverridesPanel(props: {
   )
 }
 
-function SlotsPanel(props: { staffId: number }) {
-  const today = new Date().toISOString().slice(0, 10)
-  const [start, setStart] = useState(today)
-  const [end, setEnd] = useState(today)
+type SlotsView = 'list' | 'calendar'
+
+function SlotsPanel(props: { staffId: number; staffName: string }) {
+  const [start, setStart] = useState('2026-05-25')
+  const [end, setEnd] = useState('2026-05-29')
   const [durationMin, setDurationMin] = useState(30)
   const [days, setDays] = useState<SlotsDay[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [view, setView] = useState<SlotsView>('calendar')
+  const [calendarMonth, setCalendarMonth] = useState({ year: 2026, monthIndex: 4 })
+  const [selectedDate, setSelectedDate] = useState<string | null>('2026-05-25')
+
+  async function fetchSlots(rangeStart: string, rangeEnd: string) {
+    setErr(null)
+    setBusy(true)
+    try {
+      const r = await Api.getSlots({ staffId: props.staffId, start: rangeStart, end: rangeEnd, durationMin })
+      setDays(r.days)
+    } catch (e) {
+      setErr(parseApiError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    const { start, end } = monthStartEnd(calendarMonth.year, calendarMonth.monthIndex)
+    void fetchSlots(start, end)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.staffId])
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-2 md:grid-cols-4">
+      <p className="text-xs text-slate-600">
+        Showing slots for <span className="font-medium text-slate-900">{props.staffName}</span>
+      </p>
+
+      <div className="flex rounded-lg border bg-slate-50 p-1" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          data-testid="slots-view-calendar"
+          className={clsx(
+            'flex-1 rounded-md px-2 py-1.5 text-xs font-medium sm:text-sm',
+            view === 'calendar' ? 'bg-white shadow-sm' : 'text-slate-600',
+          )}
+          onClick={() => {
+            setView('calendar')
+            const { start, end } = monthStartEnd(calendarMonth.year, calendarMonth.monthIndex)
+            void fetchSlots(start, end)
+          }}
+        >
+          Calendar
+        </button>
+        <button
+          type="button"
+          role="tab"
+          data-testid="slots-view-list"
+          className={clsx(
+            'flex-1 rounded-md px-2 py-1.5 text-xs font-medium sm:text-sm',
+            view === 'list' ? 'bg-white shadow-sm' : 'text-slate-600',
+          )}
+          onClick={() => setView('list')}
+        >
+          List
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
         <label className="text-xs text-slate-600">
           Start
           <input
@@ -487,7 +636,7 @@ function SlotsPanel(props: { staffId: number }) {
             onChange={(e) => setEnd(e.target.value)}
           />
         </label>
-        <label className="text-xs text-slate-600">
+        <label className="text-xs text-slate-600 sm:col-span-2">
           Duration
           <select
             className="mt-1 w-full rounded-md border px-2 py-2 text-sm"
@@ -501,38 +650,59 @@ function SlotsPanel(props: { staffId: number }) {
             ))}
           </select>
         </label>
-        <div className="flex items-end">
-          <button
-            className={clsx(
-              'w-full rounded-md px-3 py-2 text-sm font-medium',
-              busy ? 'bg-slate-200 text-slate-500' : 'bg-slate-900 text-white hover:bg-slate-800',
-            )}
-            disabled={busy}
-            onClick={async () => {
-              setErr(null)
-              setBusy(true)
-              try {
-                const r = await Api.getSlots({ staffId: props.staffId, start, end, durationMin })
-                setDays(r.days)
-              } catch (e) {
-                setErr(parseApiError(e))
-              } finally {
-                setBusy(false)
-              }
-            }}
-          >
-            Generate
-          </button>
-        </div>
       </div>
+
+      <button
+        type="button"
+        data-testid="generate-slots"
+        className={clsx(
+          'w-full rounded-md px-3 py-2 text-sm font-medium',
+          busy ? 'bg-slate-200 text-slate-500' : 'bg-slate-900 text-white hover:bg-slate-800',
+        )}
+        disabled={busy}
+        onClick={() => {
+          if (view === 'calendar') {
+            const { start, end } = monthStartEnd(calendarMonth.year, calendarMonth.monthIndex)
+            void fetchSlots(start, end)
+          } else {
+            void fetchSlots(start, end)
+          }
+        }}
+      >
+        {busy ? 'Loading…' : 'Generate slots'}
+      </button>
 
       {err ? <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-900">{err}</div> : null}
 
-      {days ? (
-        <div className="space-y-3">
+      {view === 'calendar' ? (
+        <AvailabilityCalendar
+          year={calendarMonth.year}
+          monthIndex={calendarMonth.monthIndex}
+          days={days}
+          selectedDate={selectedDate}
+          onSelectDate={setSelectedDate}
+          onPrevMonth={() => {
+            setCalendarMonth((m) => {
+              const next = m.monthIndex === 0 ? { year: m.year - 1, monthIndex: 11 } : { year: m.year, monthIndex: m.monthIndex - 1 }
+              const { start, end } = monthStartEnd(next.year, next.monthIndex)
+              void fetchSlots(start, end)
+              return next
+            })
+          }}
+          onNextMonth={() => {
+            setCalendarMonth((m) => {
+              const next = m.monthIndex === 11 ? { year: m.year + 1, monthIndex: 0 } : { year: m.year, monthIndex: m.monthIndex + 1 }
+              const { start, end } = monthStartEnd(next.year, next.monthIndex)
+              void fetchSlots(start, end)
+              return next
+            })
+          }}
+        />
+      ) : days ? (
+        <div className="max-h-[min(60vh,32rem)] space-y-3 overflow-y-auto pr-1" data-testid="slots-list">
           {days.map((d) => (
             <div key={d.date} className="rounded-md border bg-white">
-              <div className="flex items-center justify-between border-b bg-slate-50 px-3 py-2">
+              <div className="flex flex-col gap-2 border-b bg-slate-50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-sm font-medium">{d.dateLabel ?? formatDateLong(d.date)}</div>
                 <SourcePill source={d.source} />
               </div>
@@ -555,7 +725,7 @@ function SlotsPanel(props: { staffId: number }) {
           ))}
         </div>
       ) : (
-        <div className="text-sm text-slate-600">Select inputs and click Generate.</div>
+        <div className="text-sm text-slate-600">Set a date range and click Generate slots.</div>
       )}
     </div>
   )
@@ -579,6 +749,5 @@ function SourcePill(props: { source: SlotsDay['source'] }) {
         : source === 'override_unavailable'
           ? 'bg-amber-50 text-amber-800 border-amber-200'
           : 'bg-slate-100 text-slate-700 border-slate-200'
-  return <span className={clsx('rounded-full border px-2 py-0.5 text-xs', style)}>{label}</span>
+  return <span className={clsx('w-fit rounded-full border px-2 py-0.5 text-xs', style)}>{label}</span>
 }
-

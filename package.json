@@ -5,13 +5,16 @@
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
     "build": "npm --prefix server run build && npm --prefix web run build",
-    "test": "npm --prefix server run test && npm --prefix web run test"
+    "test": "npm --prefix server run test && npm --prefix web run test",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "@playwright/test": "^1.55.0",
     "concurrently": "^9.2.1"
   }
 }
