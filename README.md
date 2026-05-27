@@ -232,6 +232,24 @@ The API rejects:
 
 ---
 
+## Publishing to GitHub
+
+From the project root (after [GitHub CLI](https://cli.github.com/) is installed):
+
+```bash
+gh auth login
+gh repo create availability-scheduler --public --source=. --remote=origin --push
+```
+
+Or create an empty repo on GitHub, then:
+
+```bash
+git remote add origin https://github.com/YOUR_USER/availability-scheduler.git
+git push -u origin main
+```
+
+---
+
 ## License
 
 MIT (interview submission — use as reference only unless otherwise specified).
