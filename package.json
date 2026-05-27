@@ -1,0 +1,17 @@
+{
+  "name": "interviewproject",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
+    "build": "npm --prefix server run build && npm --prefix web run build",
+    "test": "npm --prefix server run test && npm --prefix web run test"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}
