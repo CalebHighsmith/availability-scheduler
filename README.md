@@ -208,18 +208,6 @@ The API rejects:
 
 ---
 
-## AI usage
-
-| Question | Answer |
-|----------|--------|
-| **Tools used** | Cursor IDE, Claude / Composer agents |
-| **Used for** | Scaffolding (Vite, Express, schema), scheduling function design, test cases, UI layout iterations |
-| **Changed / rejected** | Skipped Prisma/migrations; pinned Tailwind v3 when v4 CLI failed; rejected seeding that silently no-ops when any staff exists (made idempotent instead) |
-| **Identified manually** | Overlap rules for `add` overrides vs weekly windows; date-range validation; mobile layout via tabs |
-| **Least confident in** | Timezone/DST behavior (documented as out of scope) |
-
----
-
 ## Evaluation checklist (self-assessment)
 
 - [x] End-to-end availability workflow
@@ -229,24 +217,6 @@ The API rejects:
 - [x] Usable frontend (responsive, calendar, source labels)
 - [x] Organized, testable code
 - [x] Automated tests (unit, API, E2E)
-
----
-
-## Publishing to GitHub
-
-From the project root (after [GitHub CLI](https://cli.github.com/) is installed):
-
-```bash
-gh auth login
-gh repo create availability-scheduler --public --source=. --remote=origin --push
-```
-
-Or create an empty repo on GitHub, then:
-
-```bash
-git remote add origin https://github.com/YOUR_USER/availability-scheduler.git
-git push -u origin main
-```
 
 ---
 
